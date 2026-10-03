@@ -235,6 +235,8 @@ struct AIChatView: View {
     @ObservedObject private var deepLink = DeepLinkCoordinator.shared
     @Environment(\.dismiss) private var dismiss
     @State private var inputFocused: Bool = false
+    /// Dedupe guard for call-mode auto-send requests (same id can't fire twice).
+    @State private var lastCallAutoSendID: UInt = 0
     @State private var inputHasSelection: Bool = false
     @State private var inputIsScrollable: Bool = false
     /// [T-ios-composer-swipe-send-at-bottom] True when the composer's text is
@@ -3330,6 +3332,7 @@ struct AIChatView: View {
                 readAloudToolbarToggle
                 Spacer()
             }
+            callButtonContainer
             micButtonContainer
             sendButton
         }
@@ -3595,6 +3598,48 @@ struct AIChatView: View {
         }
     }
 
+    /// Hands-free "AI call" toggle: sits to the LEFT of the mic. Tapping engages
+    /// the real-time conversation loop (speak → auto-send → reply → auto-listen).
+    private var callButtonContainer: some View {
+        Button {
+            if voiceVM.callModeActive {
+                voiceVM.exitCallMode()
+                VoiceLog.log("[CallMode] button → end call")
+                withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = false }
+            } else {
+                // Entering hands-free mode opens the voice panel + mic.
+                vm.voiceUsedInComposition = true
+                VoiceModePreference.shared.enteredFromText = true
+                withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = true }
+                voiceVM.enterCallMode()
+                VoiceLog.log("[CallMode] button → start call")
+            }
+        } label: {
+            Image(systemName: voiceVM.callModeActive ? "phone.fill" : "phone")
+                .font(.system(size: voiceVM.callModeActive ? 13 : 12, weight: .semibold))
+                .foregroundStyle(voiceVM.callModeActive ? .white : ChatColors.secondaryText)
+                .frame(width: 34, height: 34)
+                .background(voiceVM.callModeActive ? Color.green : ChatColors.inputIconBg)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(voiceVM.callModeActive ? Color.green : ChatColors.inputIconBorder, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(voiceVM.callModeActive ? "End AI call" : "Start AI call"))
+        .accessibilityHint(Text("Hands-free: speak, then it auto-sends and keeps listening"))
+        // [CallMode] React to the voice panel's auto-send request by dispatching
+        // the current composition (same path as the Send button).
+        .onChange(of: voiceVM.autoSendRequestID) { id in
+            guard id > lastCallAutoSendID else { return }
+            lastCallAutoSendID = id
+            performSend()
+        }
+        // [CallMode] Reply finished → resume listening after the gap.
+        .onChange(of: vm.isProcessing) { processing in
+            guard !processing, voiceVM.callModeActive, voiceVM.callAwaitingReply else { return }
+            voiceVM.resumeListeningAfterReply()
+        }
+    }
+
     /// Mic button plus the attached language-picker sheet.
     private var micButtonContainer: some View {
         MicButton(speechManager: speechManager, inputFocused: $inputFocused, onTap: {
@@ -3603,6 +3648,8 @@ struct AIChatView: View {
                 // [T-ios-voice-keyboard-text-carry] Keep the transcript: the
                 // composer mirrors it, so clearing here would empty the input
                 // box and lose the dictated text on the way back to keyboard.
+                // Leaving voice mode also ends any hands-free call loop.
+                if voiceVM.callModeActive { voiceVM.exitCallMode() }
                 voiceVM.reset(clearTranscript: false)
                 withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = false }
             } else {

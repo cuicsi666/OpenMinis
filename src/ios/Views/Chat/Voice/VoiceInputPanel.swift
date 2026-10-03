@@ -125,7 +125,11 @@ final class VoiceInputViewModel: ObservableObject {
             }
         }
     }
-    @Published var transcript: String = ""
+    @Published var transcript: String = "" {
+        didSet {
+            if callModeActive { lastTranscriptChangeAt = Date() }
+        }
+    }
     @Published var waveformLevels: [Float] = Array(repeating: 0.1, count: 20)
     @Published var rippleScale: [CGFloat] = [1.0, 1.0, 1.0]
     /// Inline mode: user double-tapped the transcript to correct it by keyboard.
@@ -453,6 +457,102 @@ final class VoiceInputViewModel: ObservableObject {
             permissionDenied = true
             report(.micPermissionDenied)
         }
+    }
+
+    // MARK: - Call Mode (real-time AI conversation)
+    //
+    // A hands-free "phone call" loop layered on the continuous-dictation VAD:
+    //   speak → ~3s silence → auto-send the transcript → wait for the reply to
+    //   finish → 1s pause → resume listening → repeat. Drive by `onAutoSend`,
+    //   which AIChatView wires to its `performSend`.
+
+    /// True while the call loop is engaged (mic listening in hands-free mode).
+    @Published var callModeActive = false
+    /// True after a turn was auto-sent and we are awaiting the AI reply —
+    /// suppresses further auto-send until `resumeListening()` is called.
+    @Published var callAwaitingReply = false
+    /// Incremented when the silence detector wants the accumulated transcript
+    /// dispatched. AIChatView observes this and runs its `performSend()` —
+    /// a published signal rather than a stored closure so no retain cycle
+    /// forms between the @StateObject and the SwiftUI view.
+    @Published var autoSendRequestID: UInt = 0
+    private var callIdleTimer: Timer?
+    /// Last moment the parsed transcript grew (reset on every append).
+    private var lastTranscriptChangeAt = Date.distantPast
+    /// How long the mic must hear silence (no new transcript text) before the
+    /// recognized utterance is auto-sent. 3.0s per the boss's spec.
+    private let callSilenceToSendSeconds: TimeInterval = 3.0
+    /// Pause after the reply completes before resuming listening.
+    private let callReplyGapSeconds: TimeInterval = 1.0
+
+    /// Turn the hands-free loop on and start listening.
+    func enterCallMode() {
+        callModeActive = true
+        callAwaitingReply = false
+        lastTranscriptChangeAt = Date()
+        startCallIdleTimer()
+        VoiceLog.log("[CallMode] enter — starting to listen")
+        startVAD()
+    }
+
+    /// Turn the hands-free loop off and stop the mic.
+    func exitCallMode() {
+        callModeActive = false
+        callAwaitingReply = false
+        callIdleTimer?.invalidate()
+        callIdleTimer = nil
+        VoiceLog.log("[CallMode] exit — stopping mic")
+        if vad.isRunning { stopListening() }
+        state = .waiting
+    }
+
+    /// Resume listening after the AI finished replying (1s gap applied by the
+    /// caller or self). Re-enters the silence/auto-send loop.
+    func resumeListening() {
+        callAwaitingReply = false
+        lastTranscriptChangeAt = Date()
+        guard callModeActive else { return }
+        VoiceLog.log("[CallMode] resumeListening")
+        startVAD()
+    }
+
+    /// Reply just finished (`isProcessing` flipped false): pause the configured
+    /// gap, then resume listening for the next utterance. Called from AIChatView
+    /// when a call auto-send is being answered.
+    func resumeListeningAfterReply() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(callReplyGapSeconds * 1_000_000_000))
+            guard callModeActive else { return }
+            resumeListening()
+        }
+    }
+
+    /// Public pause hook: stop the mic WITHOUT leaving call mode (e.g. while the
+    /// reply is playing, so we don't transcribe our own AI voice).
+    func pauseListeningForReply() {
+        if vad.isRunning { stopListening() }
+        state = .waiting
+    }
+
+    private func startCallIdleTimer() {
+        callIdleTimer?.invalidate()
+        callIdleTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.evaluateCallIdle() }
+        }
+    }
+
+    /// Fire an auto-send when the mic heard silence for `callSilenceToSendSeconds`
+    /// after some transcript text accumulated, while not already awaiting a reply.
+    private func evaluateCallIdle() {
+        guard callModeActive, !callAwaitingReply else { return }
+        guard !transcript.isEmpty else { return }
+        let silence = Date().timeIntervalSince(lastTranscriptChangeAt)
+        guard silence >= callSilenceToSendSeconds else { return }
+        // Don't re-fire while VAD still reports speech (mid-utterance).
+        guard !vad.isSpeaking else { return }
+        callAwaitingReply = true
+        VoiceLog.log("[CallMode] \(Int(silence))s silence — auto-sending transcript (\(transcript.count) chars)")
+        autoSendRequestID &+= 1
     }
 
     /// Stop capture and return the panel to idle.
