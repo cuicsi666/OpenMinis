@@ -888,6 +888,41 @@ final class ProviderConfigStore: ObservableObject {
         config.agentLoopModelEntryIds = entries.map(\.id)
         config.agentLoopGroupIds = [group.id]
 
+        // [MinisR] Voice: embed the Xiaomi MiMo account and make its ASR +
+        // "茉莉" TTS the DEFAULT voice engine (recognize + read-reply) for this
+        // app. Key is embedded per the boss's request; bundled voice entries put
+        // 茉莉 first so the resolver's default output lands on 茉莉, not 冰糖.
+        let mimoInstance = ProviderInstance(
+            label: "小米MiMo",
+            providerType: .openAI,
+            credentialType: .apiKey,
+            customBaseURL: "https://api.xiaomimimo.com/v1",
+            appendV1Suffix: false
+        )
+        config.instances.append(mimoInstance)
+        ProviderKeychainHelper.saveAPIKey(
+            "sk-cv6305ldk6jcznxb5rvxrz31bi59tqj8igdi91i2cjfmpahs",
+            instanceId: mimoInstance.id,
+            caller: "MinisR.seedBundled")
+        let mimoModels: [(id: String, name: String, mod: ModelModality)] = [
+            ("mimo-v2.5-asr", "MiMo ASR v2.5", .audioInput),
+            ("茉莉", "茉莉 (中文, 女)", .audioOutput),
+            ("冰糖", "冰糖 (中文, 女)", .audioOutput),
+            ("苏打", "苏打 (中文, 男)", .audioOutput),
+            ("Mia", "Mia (English, 女)", .audioOutput)
+        ]
+        let mimoEntries = mimoModels.map {
+            ModelEntry(providerInstanceId: mimoInstance.id,
+                       model: LLMModel(id: $0.id, displayName: $0.name,
+                                       provider: "mimo", modalityOverride: $0.mod),
+                       isCustom: true)
+        }
+        config.modelEntries.append(contentsOf: mimoEntries)
+        let voiceGroup = ModelGroup(name: "小米语音(茉莉)", memberEntryIds: mimoEntries.map(\.id))
+        config.modelGroups.append(voiceGroup)
+        config.voiceInputGroupId = voiceGroup.id
+        config.voiceOutputGroupId = voiceGroup.id
+        logger.info("[MinisR] seed: MiMo voice embedded — input/ASR + output/茉莉 default set")
         UserDefaults.standard.set(true, forKey: stampKey)
         save()
         logger.info("[MinisR] seed complete: instance=\(instance.label) entries=\(entries.count) group=\(group.name) defaultGroup=\(group.id)")

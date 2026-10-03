@@ -729,7 +729,7 @@ final class MimoVoiceProvider: VoiceProvider {
 
     override func defaultVoiceInputModel() -> String  { "mimo-v2.5-asr" }
     override func defaultVoiceOutputModel() -> String { "mimo-v2.5-tts" }
-    override func defaultVoiceOutputVoice() -> String { "mimo_default" }
+    override func defaultVoiceOutputVoice() -> String { "茉莉" }
 
     // -- ASR -----------------------------------------------------------------
 
