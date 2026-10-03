@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- [OI-mods] 多开侧载精简版：去掉 iCloud/HealthKit/HomeKit/WNFC/WeatherKit
+	     等容器&敏感 Capability（付费证书未后台开通时最易导致启动签名校验失败闪退）。
+	     仅保留侧载安全且多开隔离所需的核心项。 -->
+	<key>aps-environment</key>
+	<string>development</string>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.cuicsi.openminis</string>
+	</array>
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>
