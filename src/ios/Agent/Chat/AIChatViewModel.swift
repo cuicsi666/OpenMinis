@@ -1806,7 +1806,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     // MARK: - Speech
 
     private let speechSynthesizer = AVSpeechSynthesizer()
-    private lazy var speechDelegate = SpeechFinishedDelegate()
+    private lazy var speechDelegate: SpeechFinishedDelegate = {
+            let d = SpeechFinishedDelegate()
+            d.onFinished = { [weak self] in self?.unitFinishedSpeaking() }
+            return d
+        }()
     /// True when speech is paused (not stopped). Toggled by the floating speech button.
     @Published var speechPaused = false
 
@@ -2021,6 +2025,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking(at: .word)
         }
+        replySpokenPending &+= 1
         let utterance = makeUtterance(text)
         speechSynthesizer.speak(utterance)
     }
@@ -2146,6 +2151,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             BackgroundKeepAliveManager.shared.stopSilentAudio()
             speechSynthesizer.delegate = speechDelegate
         }
+        replySpokenPending &+= 1
+        replySpokenPending &+= 1
         let utterance = makeUtterance(text)
         speechSynthesizer.speak(utterance)  // queues automatically, does NOT interrupt
     }
@@ -2181,7 +2188,20 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     private var replyUsesCloudTTS: Bool?
 
     /// Reset the per-reply TTS engine snapshot (call at the start of each reply).
-    func resetReplyTTSEngine() { replyUsesCloudTTS = nil }
+    func resetReplyTTSEngine() {
+        replyUsesCloudTTS = nil
+        replySpokenPending = 0
+    }
+
+    /// Count of system-TTS utterances queued for the CURRENT reply that have not
+    /// yet finished playing. Decremented by `SpeechFinishedDelegate.didFinish`.
+    /// When it (plus any cloud TTS) reaches zero, the reply has genuinely been
+    /// fully read — event-driven, so an arbitrarily long pause mid-reply never
+    /// falsely signals "done" (which a silence timeout would).
+    private(set) var replySpokenPending = 0
+    func unitFinishedSpeaking() {
+        if replySpokenPending > 0 { replySpokenPending -= 1 }
+    }
 
     /// True once THIS turn (one user send, spanning ALL agent-loop iterations)
     /// has cleared the previous turn's TTS leftovers. Lives on the vm — NOT on

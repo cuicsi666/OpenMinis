@@ -3634,22 +3634,17 @@ struct AIChatView: View {
             performSend()
         }
         // [CallMode] Reply finished → resume listening AFTER the reply has genuinely
-        // finished SPEAKING. Uses a STABILITY wait (several consecutive silent
-        // ticks) so a brief pause inside an incremental read-aloud doesn't
-        // falsely look like "done" and resume mid-reply.
+        // been fully READ. Event-driven (not a silence timer): we wait until the
+        // system-TTS unit counter hits zero (each utterance's didFinish decrements
+        // it) AND no system/cloud speech is still active — so a long pause inside
+        // a reply can never falsely trigger the next round early.
         .onChange(of: vm.isProcessing) { processing in
             guard !processing, voiceVM.callModeActive, voiceVM.callAwaitingReply else { return }
             Task { @MainActor in
-                var stable = 0
                 var waits = 0
-                while stable < 4 && waits < 400 {   // ~800ms stable silence, cap ~80s
-                    if vm.isSpeaking || VoiceOutputPlayer.shared.isPlaying {
-                        stable = 0
-                    } else {
-                        stable += 1
-                    }
+                while (vm.replySpokenPending > 0 || vm.isSpeaking || VoiceOutputPlayer.shared.isPlaying), waits < 800 {
                     waits += 1
-                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    try? await Task.sleep(nanoseconds: 150_000_000) // 150ms, cap ~120s
                 }
                 guard voiceVM.callModeActive else { return }
                 voiceVM.resumeListening()
