@@ -920,9 +920,10 @@ final class ProviderConfigStore: ObservableObject {
         config.modelEntries.append(contentsOf: mimoEntries)
         let voiceGroup = ModelGroup(name: "小米语音(茉莉)", memberEntryIds: mimoEntries.map(\.id))
         config.modelGroups.append(voiceGroup)
-        config.voiceInputGroupId = voiceGroup.id
-        config.voiceOutputGroupId = voiceGroup.id
-        logger.info("[MinisR] seed: MiMo voice embedded — input/ASR + output/茉莉 default set")
+        // [MinisR] Do NOT force MiMo as the default ASR/TTS — the boss wants the
+        // app to start on the system default and let them pick MiMo (ASR / 茉莉)
+        // in Settings. The instance + voice group stay so the option exists.
+        logger.info("[MinisR] seed: MiMo voice embedded (user-selectable; default left to system)")
         UserDefaults.standard.set(true, forKey: stampKey)
         save()
         logger.info("[MinisR] seed complete: instance=\(instance.label) entries=\(entries.count) group=\(group.name) defaultGroup=\(group.id)")
