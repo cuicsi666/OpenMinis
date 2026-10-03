@@ -106,6 +106,15 @@ final class AudioSessionCoordinator {
     /// True while the mic is capturing — reply TTS is suppressed in this state.
     var isCapturing: Bool { active.contains(.capture) }
 
+    /// [T-call-bluetooth-pause] When true, `.capture` and `.replyTTS` share ONE
+    /// `.playAndRecord` profile so a Bluetooth headset holds a single HFP + A2DP
+    /// link instead of toggling between A2DP (output-only) and HFP (headset mic)
+    /// at every speech⇄reply boundary. That toggle is what the boss heard as a
+    /// short pause/resume + noise-cancellation flip at the start and end of each
+    /// call turn. Set by the hands-free call loop (VoiceInputViewModel) while it
+    /// is engaged.
+    var callModeProfileForced = false
+
     // MARK: - Public API
 
     /// Posted when a media attachment preempts reply TTS — the active chat VM stops
@@ -215,19 +224,22 @@ final class AudioSessionCoordinator {
 
     private func profile(for intent: Intent) -> (AVAudioSession.Category, AVAudioSession.Mode, AVAudioSession.CategoryOptions) {
         switch intent {
-        case .capture:
-            // [T-bluetooth-mic] `.allowBluetooth` lets the headset's HFP mic
-            // become an eligible input source. The mode stays `.measurement`
-            // (raw capture for VAD/ASR) exactly like the built-in path; the
-            // actual Bluetooth selection happens in `apply()` right after
-            // `setActive(true)` via `BluetoothMicRouter.preferBluetoothMic()`.
-            // Bluetooth HFP presents at 16 kHz mono — VAD already adapts to the
-            // reported input format (48/24/16/8 kHz), so no resampling needed.
-            return (.record, .measurement, [.allowBluetooth])
+        // [T-call-bluetooth-pause] Unified hands-free profile: when the call loop
+        // is active, capture and replyTTS both resolve here so the CATEGORY never
+        // changes between listening and speaking → no Bluetooth A2DP↔HFP toggle.
+        case .capture, .replyTTS:
+            if callModeProfileForced {
+                return (.playAndRecord, .spokenAudio, [.allowBluetooth, .allowBluetoothA2DP])
+            }
+            if intent == .capture {
+                // [T-bluetooth-mic] `.allowBluetooth` lets the headset's HFP mic
+                // become an eligible input source. Bluetooth HFP presents at
+                // 16 kHz mono — VAD adapts to the reported input format.
+                return (.record, .measurement, [.allowBluetooth])
+            }
+            return (.playback, .spokenAudio, [.duckOthers])
         case .mediaAttachment:
             return (.playback, .default, [.duckOthers])
-        case .replyTTS:
-            return (.playback, .spokenAudio, [.duckOthers])
         case .backgroundKeepAlive:
             return (.playback, .default, [.mixWithOthers])
         }

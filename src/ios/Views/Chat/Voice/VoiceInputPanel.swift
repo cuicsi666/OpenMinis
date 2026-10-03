@@ -482,14 +482,16 @@ final class VoiceInputViewModel: ObservableObject {
     /// How long the mic must hear silence (no new transcript text) before the
     /// recognized utterance is auto-sent. 3.0s per the boss's spec.
     private let callSilenceToSendSeconds: TimeInterval = 3.0
-    /// Pause after the reply completes before resuming listening.
-    private let callReplyGapSeconds: TimeInterval = 1.0
 
     /// Turn the hands-free loop on and start listening.
     func enterCallMode() {
         callModeActive = true
         callAwaitingReply = false
         lastTranscriptChangeAt = Date()
+        // [T-call-bluetooth-pause] Force the shared bidirectional audio profile
+        // BEFORE the mic session activates, so Bluetooth holds one HFP+A2DP link
+        // throughout the call and never toggles at turn boundaries.
+        AudioSessionCoordinator.shared.callModeProfileForced = true
         startCallIdleTimer()
         VoiceLog.log("[CallMode] enter — starting to listen")
         startVAD()
@@ -504,6 +506,8 @@ final class VoiceInputViewModel: ObservableObject {
         VoiceLog.log("[CallMode] exit — stopping mic")
         if vad.isRunning { stopListening() }
         state = .waiting
+        // Release the forced call profile once the mic is down.
+        AudioSessionCoordinator.shared.callModeProfileForced = false
     }
 
     /// Resume listening after the AI finished replying (1s gap applied by the
@@ -516,12 +520,30 @@ final class VoiceInputViewModel: ObservableObject {
         startVAD()
     }
 
-    /// Reply just finished (`isProcessing` flipped false): pause the configured
-    /// gap, then resume listening for the next utterance. Called from AIChatView
-    /// when a call auto-send is being answered.
+    /// Reply just finished (`isProcessing` flipped false): wait until the reply's
+    /// audio has actually FINISHED playing (its TTS finished speaking — not just
+    /// the text generation), then resume listening for the next utterance. This
+    /// is what stops the mic from re-opening under our own AI voice and cutting
+    /// off the reply's tail. Called from AIChatView when a call auto-send is
+    /// being answered.
     func resumeListeningAfterReply() {
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(callReplyGapSeconds * 1_000_000_000))
+            // Give the reply TTS a beat to start, then poll until playback ends
+            // (bounded so a stuck player can't wedge the call forever).
+            try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
+            var waits = 0
+            let maxWaits = 300   // ~60s
+            while VoiceOutputPlayer.shared.isPlaying, waits < maxWaits {
+                waits += 1
+                try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+            }
+            if waits >= maxWaits {
+                VoiceLog.log("[CallMode] reply replay exceeded 60s — resuming anyway")
+            } else if waits > 0 {
+                VoiceLog.log("[CallMode] waited for reply playback to finish (\(waits * 200)ms)")
+            }
+            // Short settle gap so the headset re-locks on HFP before the mic opens.
+            try? await Task.sleep(nanoseconds: 250_000_000)
             guard callModeActive else { return }
             resumeListening()
         }
