@@ -3633,10 +3633,23 @@ struct AIChatView: View {
             lastCallAutoSendID = id
             performSend()
         }
-        // [CallMode] Reply finished → resume listening after the gap.
+        // [CallMode] Reply finished → resume listening AFTER the reply has genuinely
+        // finished SPEAKING (system TTS via vm.isSpeaking AND cloud
+        // VoiceOutputPlayer), not just when text generation ends. Otherwise the
+        // mic re-opens under our own voice and cuts the reply's tail.
         .onChange(of: vm.isProcessing) { processing in
             guard !processing, voiceVM.callModeActive, voiceVM.callAwaitingReply else { return }
-            voiceVM.resumeListeningAfterReply()
+            Task { @MainActor in
+                var waits = 0
+                while (vm.isSpeaking || VoiceOutputPlayer.shared.isPlaying), waits < 300 {
+                    waits += 1
+                    try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+                }
+                // Small settle gap so the headset re-locks on HFP before the mic opens.
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard voiceVM.callModeActive else { return }
+                voiceVM.resumeListening()
+            }
         }
     }
 
