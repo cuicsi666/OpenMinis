@@ -235,7 +235,12 @@ final class AudioSessionCoordinator {
         // changes between listening and speaking → no Bluetooth A2DP↔HFP toggle.
         case .capture, .replyTTS:
             if callModeProfileForced {
-                return (.playAndRecord, .spokenAudio, [.allowBluetooth, .allowBluetoothA2DP])
+                // [T-call-bluetooth-pause] HFP-ONLY (no A2DP). A2DP is output-only
+                // and forces the headset to flip between A2DP (high-quality
+                // playback, ANC altered) and HFP (headset mic) every turn — which
+                // is the ANC "hopping" the boss keeps hearing. HFP single profile =
+                // one stable headset link, stable ANC.
+                return (.playAndRecord, .spokenAudio, [.allowBluetooth])
             }
             if intent == .capture {
                 // [T-bluetooth-mic] `.allowBluetooth` lets the headset's HFP mic
@@ -249,9 +254,9 @@ final class AudioSessionCoordinator {
         case .backgroundKeepAlive:
             return (.playback, .default, [.mixWithOthers])
         case .callHold:
-            // [T-call-bluetooth-pause] Constant bidirectional profile for the
-            // whole call: Bluetooth keeps mic (HFP) + speaker, never toggles.
-            return (.playAndRecord, .spokenAudio, [.allowBluetooth, .allowBluetoothA2DP])
+            // [T-call-bluetooth-pause] HFP-only link for the whole call — see the
+            // forced branch: no A2DP so the headset never toggles profiles.
+            return (.playAndRecord, .spokenAudio, [.allowBluetooth])
         }
     }
 

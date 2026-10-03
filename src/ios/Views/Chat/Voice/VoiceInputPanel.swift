@@ -477,6 +477,8 @@ final class VoiceInputViewModel: ObservableObject {
     /// forms between the @StateObject and the SwiftUI view.
     @Published var autoSendRequestID: UInt = 0
     private var callIdleTimer: Timer?
+    /// Prior read-reply preference, remembered so exit restores it.
+    private var readAloudBeforeCall: Bool?
     /// Last moment the parsed transcript grew (reset on every append).
     private var lastTranscriptChangeAt = Date.distantPast
     /// How long the mic must hear silence (no new transcript text) before the
@@ -494,8 +496,13 @@ final class VoiceInputViewModel: ObservableObject {
         // mic session activates with the call-hold already live.
         AudioSessionCoordinator.shared.callModeProfileForced = true
         AudioSessionCoordinator.shared.begin(.callHold)
+        // [T-call-read-reply] Calls MUST read the reply aloud (otherwise
+        // canSpeakNow is false and nothing is spoken). Remember the prior state
+        // so leaving the call restores the user's own preference.
+        readAloudBeforeCall = VoiceOutputPreferences.isEnabled
+        VoiceOutputPreferences.isEnabled = true
         startCallIdleTimer()
-        VoiceLog.log("[CallMode] enter — starting to listen")
+        VoiceLog.log("[CallMode] enter — starting to listen (read-reply forced ON)")
         startVAD()
     }
 
@@ -509,9 +516,11 @@ final class VoiceInputViewModel: ObservableObject {
         if vad.isRunning { stopListening() }
         state = .waiting
         // Release the call-hold (session may deactivate now the call is over)
-        // and the forced call profile.
+        // and the forced call profile; restore the user's own read-reply pref.
         AudioSessionCoordinator.shared.end(.callHold)
         AudioSessionCoordinator.shared.callModeProfileForced = false
+        if let prev = readAloudBeforeCall { VoiceOutputPreferences.isEnabled = prev }
+        readAloudBeforeCall = nil
     }
 
     /// Resume listening after the AI finished replying (1s gap applied by the
