@@ -2,9 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDisplayName</key>
+	<string>Minis_R</string>
+	<key>CFBundleName</key>
+	<string>Minis_R</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.cuicsi.openminis.liveactivity-refresh</string>
+		<string>com.cuicsi.minisr.liveactivity-refresh</string>
 	</array>
 	<key>CFBundleDocumentTypes</key>
 	<array>
@@ -29,7 +33,7 @@
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>com.cuicsi.openminis.minisbak</string>
+				<string>com.cuicsi.minisr.minisbak</string>
 			</array>
 		</dict>
 	</array>
@@ -163,7 +167,7 @@
 			<string>Claude OAuth Callback</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.cuicsi.openminis</string>
+				<string>com.cuicsi.minisr</string>
 			</array>
 		</dict>
 		<dict>
@@ -256,7 +260,7 @@
 			<key>UTTypeDescription</key>
 			<string>Minis Backup</string>
 			<key>UTTypeIdentifier</key>
-			<string>com.cuicsi.openminis.minisbak</string>
+			<string>com.cuicsi.minisr.minisbak</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>

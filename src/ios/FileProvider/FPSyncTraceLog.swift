@@ -17,12 +17,12 @@ import os.log
 enum FPSyncTraceLog {
     private static let logFileName = "fp-sync-trace.log"
     private static let maxBytes: Int = 256 * 1024
-    private static let queue = DispatchQueue(label: "com.cuicsi.openminis.FileProvider.fpSyncTrace")
-    private static let osLog = OSLog(subsystem: "com.cuicsi.openminis.FileProvider", category: "FPSyncTrace")
+    private static let queue = DispatchQueue(label: "com.cuicsi.minisr.FileProvider.fpSyncTrace")
+    private static let osLog = OSLog(subsystem: "com.cuicsi.minisr.FileProvider", category: "FPSyncTrace")
 
     private static var fileURL: URL? {
         guard let container = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: "group.com.cuicsi.openminis"
+            forSecurityApplicationGroupIdentifier: "group.com.cuicsi.minisr"
         ) else { return nil }
         let dir = container.appendingPathComponent("MinisConfig", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

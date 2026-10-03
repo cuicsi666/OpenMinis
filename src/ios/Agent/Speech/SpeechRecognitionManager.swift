@@ -252,8 +252,13 @@ final class SpeechRecognitionManager: ObservableObject {
         let audioSession = AVAudioSession.sharedInstance()
         // No `.duckOthers`: capturing the mic shouldn't quiet other apps' audio
         // (it sometimes stayed ducked after recording stopped).
-        try audioSession.setCategory(.record, mode: .measurement)
+        // [T-bluetooth-mic] `.allowBluetooth` makes the headset's HFP mic an
+        // eligible input so the recognizer can listen via the Bluetooth mic.
+        try audioSession.setCategory(.record, mode: .measurement, options: [.allowBluetooth])
         try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        // [T-bluetooth-mic] After activation, prefer the Bluetooth headset mic
+        // whenever it is attached (falls back to built-in mic when not).
+        BluetoothMicRouter.preferBluetoothMic()
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true

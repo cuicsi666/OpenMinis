@@ -245,6 +245,11 @@ final class ProviderConfigStore: ObservableObject {
         self.lastSavedSnapshot = self.config
         if loaded.degradation == .none {
             ensureVoiceTemplateModels()
+            // [Minis_R] First-launch embedding of the currently-integrated model
+            // (ipix / DeepSeek). Runs on the V2 JSON path; for a brand-new
+            // install the V3 DB is empty so adoptDB() stays on this JSON seed
+            // and never overwrites what we inject here.
+            seedBundledProvidersIfNeeded()
         } else {
             registerDegradedRecovery()
         }
@@ -828,6 +833,65 @@ final class ProviderConfigStore: ObservableObject {
     // MARK: - Provider Instances
 
     var instances: [ProviderInstance] { config.instances }
+
+    /// [Minis_R] First-launch embedding of the currently-integrated big model.
+    ///
+    /// On a fresh install (nothing configured yet) we inject a ready-to-use
+    /// provider pointing at the ipix gateway (https://ai.ipix.ink/v1) with the
+    /// models we actually use, plus a default model group. The user still has
+    /// to enter their API key once in Settings (the key is never hard-coded),
+    /// but the endpoint + model list are embedded so the app works the moment
+    /// the key is punched in. Runs exactly once; guarded by a stamp so a later
+    /// empty-config state (user deletes all providers) never re-seeds.
+    func seedBundledProvidersIfNeeded() {
+        let stampKey = "MinisR.didSeedBundledIpix"
+        if UserDefaults.standard.bool(forKey: stampKey) { return }
+        // User already has some provider configured → not a fresh install, never
+        // interfere with their existing setup. Just stamp so we don't re-check.
+        guard config.instances.isEmpty else {
+            UserDefaults.standard.set(true, forKey: stampKey)
+            return
+        }
+        logger.info("[MinisR] seedBundledProvidersIfNeeded: fresh install — embedding bundled ipix provider")
+
+        let instance = ProviderInstance(
+            label: "ipix",
+            providerType: .openAI,
+            credentialType: .apiKey,
+            customBaseURL: "https://ai.ipix.ink/v1",
+            appendV1Suffix: false
+        )
+        config.instances.append(instance)
+
+        // The models currently integrated in this build. (Endpoint + names are
+        // embedded; credentials are deliberately NOT.) If the gateway renames a
+        // model the user just refreshes the list in Settings.
+        let bundled: [(id: String, displayName: String, context: Int?)] = [
+            ("DeepSeek-V4-Flash-0731", "DeepSeek V4 Flash", 65536),
+            ("deepseek-v4.5", "DeepSeek V4.5", 65536),
+            ("qwen2.5-72b", "Qwen 2.5 72B", 32768)
+        ]
+        let entries: [ModelEntry] = bundled.map {
+            ModelEntry(
+                providerInstanceId: instance.id,
+                model: LLMModel(id: $0.id, displayName: $0.displayName, provider: "ipix", contextWindow: $0.context),
+                isCustom: true
+            )
+        }
+        config.modelEntries.append(contentsOf: entries)
+
+        let group = ModelGroup(name: "ipix", memberEntryIds: entries.map(\.id))
+        config.modelGroups.append(group)
+        config.defaultPrimaryGroupId = group.id
+        config.defaultSubGroupId = group.id
+        // Expose the bundled models in the agent loop (minis-model-use).
+        config.agentLoopModelEntryIds = entries.map(\.id)
+        config.agentLoopGroupIds = [group.id]
+
+        UserDefaults.standard.set(true, forKey: stampKey)
+        save()
+        logger.info("[MinisR] seed complete: instance=\(instance.label) entries=\(entries.count) group=\(group.name) defaultGroup=\(group.id)")
+    }
 
     func addInstance(_ instance: ProviderInstance) {
         config.instances.append(instance)
@@ -3329,7 +3393,7 @@ enum ProviderKeychainHelper {
     }
 
     static func saveAPIKey(_ key: String, instanceId: String, caller: String = #function) {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         // Delete both legacy (non-sync) and synchronizable entries
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -3354,7 +3418,7 @@ enum ProviderKeychainHelper {
     }
 
     static func loadAPIKey(instanceId: String, caller: String = #function) -> String? {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         // Try synchronizable first, then fallback to legacy
         let syncQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -3411,7 +3475,7 @@ enum ProviderKeychainHelper {
     }
 
     static func deleteAPIKey(instanceId: String, caller: String = #function) {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -3448,7 +3512,7 @@ enum ProviderKeychainHelper {
     /// read/write the exact same Keychain item as the typed
     /// `saveOAuthToken`/`loadOAuthToken` pair.
     static func saveRawOAuthToken(_ data: Data, instanceId: String) {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         let acct = "oauth-token"
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -3471,7 +3535,7 @@ enum ProviderKeychainHelper {
     }
 
     static func loadRawOAuthToken(instanceId: String) -> Data? {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -3490,7 +3554,7 @@ enum ProviderKeychainHelper {
             AppLogger(category: "Keychain").warning("write oauthToken instanceId=\(instanceId.prefix(8)) ENCODE FAILED caller=\(caller)")
             return
         }
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         let acct = "oauth-token"
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -3512,7 +3576,7 @@ enum ProviderKeychainHelper {
     }
 
     static func loadOAuthToken<T: Codable>(instanceId: String, as type: T.Type, caller: String = #function) -> T? {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         let acct = "oauth-token"
         // Try synchronizable first
         let syncQuery: [String: Any] = [
@@ -3561,7 +3625,7 @@ enum ProviderKeychainHelper {
     }
 
     static func deleteOAuthToken(instanceId: String, caller: String = #function) {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         let acct = "oauth-token"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -3623,7 +3687,7 @@ enum ProviderKeychainHelper {
     // MARK: - OAuth Strings (per-instance, e.g. email, project ID)
 
     static func saveOAuthString(_ value: String, instanceId: String, account: String, caller: String = #function) {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -3643,7 +3707,7 @@ enum ProviderKeychainHelper {
     }
 
     static func loadOAuthString(instanceId: String, account: String, caller: String = #function) -> String? {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         // Try synchronizable first
         let syncQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -3685,7 +3749,7 @@ enum ProviderKeychainHelper {
     }
 
     static func deleteOAuthString(instanceId: String, account: String, caller: String = #function) {
-        let service = "com.cuicsi.openminis.provider.\(instanceId)"
+        let service = "com.cuicsi.minisr.provider.\(instanceId)"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

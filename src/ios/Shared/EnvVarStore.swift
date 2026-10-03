@@ -40,7 +40,7 @@ final class EnvVarStore: ObservableObject {
     @Published private(set) var entries: [EnvVarEntry] = []
 
     private let fileURL: URL
-    nonisolated private static let keychainService = "com.cuicsi.openminis.envvar"
+    nonisolated private static let keychainService = "com.cuicsi.minisr.envvar"
 
     init() {
         let libraryURL = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!

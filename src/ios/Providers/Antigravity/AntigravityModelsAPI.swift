@@ -116,7 +116,7 @@ private enum AntigravityModelsCache {
 
     private static var cacheDir: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.cuicsi.openminis.antigravity-models-cache", isDirectory: true)
+            .appendingPathComponent("com.cuicsi.minisr.antigravity-models-cache", isDirectory: true)
     }
 
     private static func cacheKey(for credential: String) -> String {

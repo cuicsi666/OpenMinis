@@ -151,7 +151,14 @@ final class AudioSessionCoordinator {
     private func profile(for intent: Intent) -> (AVAudioSession.Category, AVAudioSession.Mode, AVAudioSession.CategoryOptions) {
         switch intent {
         case .capture:
-            return (.record, .measurement, [])
+            // [T-bluetooth-mic] `.allowBluetooth` lets the headset's HFP mic
+            // become an eligible input source. The mode stays `.measurement`
+            // (raw capture for VAD/ASR) exactly like the built-in path; the
+            // actual Bluetooth selection happens in `apply()` right after
+            // `setActive(true)` via `BluetoothMicRouter.preferBluetoothMic()`.
+            // Bluetooth HFP presents at 16 kHz mono — VAD already adapts to the
+            // reported input format (48/24/16/8 kHz), so no resampling needed.
+            return (.record, .measurement, [.allowBluetooth])
         case .mediaAttachment:
             return (.playback, .default, [.duckOthers])
         case .replyTTS:
@@ -176,7 +183,7 @@ final class AudioSessionCoordinator {
     /// Serial, so the ordering guarantees the old main-thread-only code relied on
     /// (deactivate-then-activate, category-before-active) still hold. AVAudioSession
     /// is thread-safe; it was never the main thread that made these calls correct.
-    private static let sessionQueue = DispatchQueue(label: "com.openminis.audiosession.apply")
+    private static let sessionQueue = DispatchQueue(label: "com.cuicsi.minisr.audiosession.apply")
 
     /// Number of profile switches enqueued on `sessionQueue` but not yet applied.
     /// Written from BOTH the main actor (enqueue) and the session queue
@@ -231,6 +238,18 @@ final class AudioSessionCoordinator {
                 }
                 if needsActivate {
                     try session.setActive(true)
+                }
+                // [T-bluetooth-mic] After the session is live with the capture
+                // category (which now allows Bluetooth), prefer the headset mic
+                // when one is attached. Only for `.capture`, and only after a
+                // successful activation — `setPreferredInput` is a no-op on an
+                // inactive session, so calling it before `setActive` would
+                // silently fail. `beginAndWait` in VAD's configureSession blocks
+                // on THIS queue, so by the time it returns and `setupEngineAndVAD`
+                // reads `inputNode.inputFormat`, the Bluetooth mic (16 kHz mono)
+                // is already the selected input — the tap sees the right format.
+                if top == .capture {
+                    BluetoothMicRouter.preferBluetoothMic()
                 }
                 let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
                 log.info("[VoiceInputDebug][AudioSession] \(reason) → \(top) (\(cat.rawValue)/\(mode.rawValue)) applied in \(String(format: "%.0f", ms))ms")
