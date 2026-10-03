@@ -79,6 +79,20 @@ final class VoiceActivityDetector: NSObject {
     private let vadQueue = DispatchQueue(label: "com.cuicsi.minisr.vad", qos: .userInteractive)
     private var vad: VADWrapper?
 
+    /// [T-call-continuous-mic] Call-mode "mute": when true the engine keeps
+    /// RUNNING (so iOS holds ONE phone-call route and the headset ANC stays put —
+    /// no per-turn session teardown) but the audio is discarded instead of fed to
+    /// the VAD. Used so the reply TTS can play without echoing into recognition,
+    /// WITHOUT stopping/starting the mic (which is what made the ANC flip).
+    private let ignoreLock = NSLock()
+    private var ignoreInputStore = false
+    func setIgnoreInput(_ v: Bool) {
+        ignoreLock.lock(); ignoreInputStore = v; ignoreLock.unlock()
+    }
+    private var ignoreInputActive: Bool {
+        ignoreLock.lock(); defer { ignoreLock.unlock() }; return ignoreInputStore
+    }
+
     // MARK: - Adaptive gain (noise-aware AGC)
     /// Smoothed gain carried frame-to-frame so it doesn't jump on transients.
     private var smoothedGain: Float = 1.0
@@ -751,6 +765,10 @@ final class VoiceActivityDetector: NSObject {
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
         guard let channelData = buffer.floatChannelData else { return }
         let frameCount = UInt(buffer.frameLength)
+        // [T-call-continuous-mic] While a reply TTS is playing we keep the engine
+        // running (to keep the phone-call route/ANC stable) but discard the audio
+        // entirely — don't feed the VAD our own AI voice.
+        if ignoreInputActive { return }
         tapFrameCounter += 1
         if tapFrameCounter % 50 == 0 {
             let elapsed = ProcessInfo.processInfo.systemUptime - rawAudioStartTime

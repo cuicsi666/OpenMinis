@@ -530,7 +530,31 @@ final class VoiceInputViewModel: ObservableObject {
         lastTranscriptChangeAt = Date()
         guard callModeActive else { return }
         VoiceLog.log("[CallMode] resumeListening")
-        startVAD()
+        // [T-call-continuous-mic] Keep the engine running (stable phone route).
+        // Just re-enable VAD input + the capture intent. Only (re)start the
+        // engine if it somehow stopped.
+        vad.setIgnoreInput(false)
+        AudioSessionCoordinator.shared.begin(.capture)
+        VoiceModePreference.shared.isCapturing = true
+        if !vad.isCapturing { startVAD() }
+    }
+
+    /// [T-call-continuous-mic] Toggle reply TTS playback vs. microphone listening.
+    /// While a reply is playing we DON'T stop the engine (that would tear down
+    /// the Bluetooth phone route and flip ANC every round) — we instead tag the
+    /// input as ignored and release the capture intent so `canSpeakNow` allows
+    /// the TTS to actually speak through the HFP link. When playback ends we
+    /// reverse: re-assert capture + un-ignore to resume recognition.
+    func setCallReplyPlaying(_ playing: Bool) {
+        guard callModeActive else { return }
+        if playing {
+            vad.setIgnoreInput(true)
+            AudioSessionCoordinator.shared.end(.capture)
+            VoiceModePreference.shared.isCapturing = false
+            VoiceLog.log("[CallMode] reply playing — ignoring mic (engine kept alive)")
+        } else {
+            resumeListening()
+        }
     }
 
     /// Reply just finished (`isProcessing` flipped false): wait until the reply's
@@ -1198,7 +1222,10 @@ final class VoiceInputViewModel: ObservableObject {
         cancelPendingForceFlush()
         pendingSegments.removeAll(keepingCapacity: true)
         // Stop the mic on send (and cancel idle/background timers via stopListening).
-        if vad.isRunning { stopListening() }
+        // [T-call-continuous-mic] In call mode we KEEP the engine running so the
+        // Bluetooth phone route/ANC never tears down between turns; the reply
+        // playback is handled by setCallReplyPlaying (ignore). Only non-call stops.
+        if vad.isRunning, !callModeActive { stopListening() }
         state = .waiting
         // Signal the inline view to collapse to compact mode after a send.
         collapseAfterSendToken &+= 1

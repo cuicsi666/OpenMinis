@@ -3634,22 +3634,33 @@ struct AIChatView: View {
             performSend()
         }
         // [CallMode] Reply finished → resume listening AFTER the reply has genuinely
-        // finished SPEAKING (system TTS via vm.isSpeaking AND cloud
-        // VoiceOutputPlayer), not just when text generation ends. Otherwise the
-        // mic re-opens under our own voice and cuts the reply's tail.
+        // finished SPEAKING. Uses a STABILITY wait (several consecutive silent
+        // ticks) so a brief pause inside an incremental read-aloud doesn't
+        // falsely look like "done" and resume mid-reply.
         .onChange(of: vm.isProcessing) { processing in
             guard !processing, voiceVM.callModeActive, voiceVM.callAwaitingReply else { return }
             Task { @MainActor in
+                var stable = 0
                 var waits = 0
-                while (vm.isSpeaking || VoiceOutputPlayer.shared.isPlaying), waits < 300 {
+                while stable < 4 && waits < 400 {   // ~800ms stable silence, cap ~80s
+                    if vm.isSpeaking || VoiceOutputPlayer.shared.isPlaying {
+                        stable = 0
+                    } else {
+                        stable += 1
+                    }
                     waits += 1
-                    try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+                    try? await Task.sleep(nanoseconds: 200_000_000)
                 }
-                // Small settle gap so the headset re-locks on HFP before the mic opens.
-                try? await Task.sleep(nanoseconds: 250_000_000)
                 guard voiceVM.callModeActive else { return }
                 voiceVM.resumeListening()
             }
+        }
+        // [CallMode] Reply is being READ (read-aloud active): ignore the mic but
+        // keep the engine alive so the Bluetooth phone route/ANC never tears down.
+        // Guarded to the true edge — resume is owned by the handler above.
+        .onChange(of: vm.isReadingAloud) { reading in
+            guard reading, voiceVM.callModeActive else { return }
+            voiceVM.setCallReplyPlaying(true)
         }
     }
 
