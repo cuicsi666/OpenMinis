@@ -488,10 +488,12 @@ final class VoiceInputViewModel: ObservableObject {
         callModeActive = true
         callAwaitingReply = false
         lastTranscriptChangeAt = Date()
-        // [T-call-bluetooth-pause] Force the shared bidirectional audio profile
-        // BEFORE the mic session activates, so Bluetooth holds one HFP+A2DP link
-        // throughout the call and never toggles at turn boundaries.
+        // [T-call-bluetooth-pause] Force the shared bidirectional audio profile AND
+        // hold the session active the whole call, so Bluetooth never drops/
+        // re-establishes a link at turn boundaries (which flips ANC). Mid=the
+        // mic session activates with the call-hold already live.
         AudioSessionCoordinator.shared.callModeProfileForced = true
+        AudioSessionCoordinator.shared.begin(.callHold)
         startCallIdleTimer()
         VoiceLog.log("[CallMode] enter — starting to listen")
         startVAD()
@@ -506,7 +508,9 @@ final class VoiceInputViewModel: ObservableObject {
         VoiceLog.log("[CallMode] exit — stopping mic")
         if vad.isRunning { stopListening() }
         state = .waiting
-        // Release the forced call profile once the mic is down.
+        // Release the call-hold (session may deactivate now the call is over)
+        // and the forced call profile.
+        AudioSessionCoordinator.shared.end(.callHold)
         AudioSessionCoordinator.shared.callModeProfileForced = false
     }
 

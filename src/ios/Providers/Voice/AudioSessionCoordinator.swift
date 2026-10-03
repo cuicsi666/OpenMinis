@@ -98,6 +98,12 @@ final class AudioSessionCoordinator {
         case replyTTS = 1
         case mediaAttachment = 2
         case capture = 3
+        /// [T-call-bluetooth-pause] Highest: held for the WHOLE hands-free call so
+        /// the audio session stays active (and on ONE Bluetooth link) the entire
+        /// call. Without it, each turn boundary where no capture/TTS is active
+        /// would deactivate the session (setActive(false)) and the headset drops
+        /// + re-establishes the link → ANC flip every round.
+        case callHold = 4
     }
 
     private let logger = AppLogger(category: "AudioSession")
@@ -242,6 +248,10 @@ final class AudioSessionCoordinator {
             return (.playback, .default, [.duckOthers])
         case .backgroundKeepAlive:
             return (.playback, .default, [.mixWithOthers])
+        case .callHold:
+            // [T-call-bluetooth-pause] Constant bidirectional profile for the
+            // whole call: Bluetooth keeps mic (HFP) + speaker, never toggles.
+            return (.playAndRecord, .spokenAudio, [.allowBluetooth, .allowBluetoothA2DP])
         }
     }
 
@@ -325,7 +335,7 @@ final class AudioSessionCoordinator {
                 // on THIS queue, so by the time it returns and `setupEngineAndVAD`
                 // reads `inputNode.inputFormat`, the Bluetooth mic (16 kHz mono)
                 // is already the selected input — the tap sees the right format.
-                if top == .capture {
+                if top == .capture || top == .callHold {
                     BluetoothMicRouter.preferBluetoothMic()
                 }
                 let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
