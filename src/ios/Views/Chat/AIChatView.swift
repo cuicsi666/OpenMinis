@@ -3633,13 +3633,25 @@ struct AIChatView: View {
             lastCallAutoSendID = id
             performSend()
         }
-        // [CallMode] Reply finished → resume listening AFTER the reply has genuinely
-        // been fully READ. Event-driven (not a silence timer): we wait until the
-        // system-TTS unit counter hits zero (each utterance's didFinish decrements
-        // it) AND no system/cloud speech is still active — so a long pause inside
-        // a reply can never falsely trigger the next round early.
+        // [CallMode] One place drives the whole reply cycle:
+        //   isProcessing TRUE  → reply is being generated → treat as "AI speaking
+        //                        phase": ignore the mic (engine stays alive for a
+        //                        stable phone route, no ANC flip) and release the
+        //                        "capturing" flag so canSpeakNow lets the TTS play.
+        //                        This must happen BEFORE reading begins — waiting
+        //                        for isReadingAloud creates a deadlock (reading
+        //                        needs capture released, capture release waits for
+        //                        reading).
+        //   isProcessing FALSE → reply done → EVENT-DRIVEN wait for it to be truly
+        //                        fully read (pending unit counter to zero + no
+        //                        system/cloud speech), then resume listening.
         .onChange(of: vm.isProcessing) { processing in
-            guard !processing, voiceVM.callModeActive, voiceVM.callAwaitingReply else { return }
+            guard voiceVM.callModeActive else { return }
+            if processing {
+                voiceVM.setCallReplyPlaying(true)
+                return
+            }
+            guard voiceVM.callAwaitingReply else { return }
             Task { @MainActor in
                 var waits = 0
                 while (vm.replySpokenPending > 0 || vm.isSpeaking || VoiceOutputPlayer.shared.isPlaying), waits < 800 {
@@ -3649,13 +3661,6 @@ struct AIChatView: View {
                 guard voiceVM.callModeActive else { return }
                 voiceVM.resumeListening()
             }
-        }
-        // [CallMode] Reply is being READ (read-aloud active): ignore the mic but
-        // keep the engine alive so the Bluetooth phone route/ANC never tears down.
-        // Guarded to the true edge — resume is owned by the handler above.
-        .onChange(of: vm.isReadingAloud) { reading in
-            guard reading, voiceVM.callModeActive else { return }
-            voiceVM.setCallReplyPlaying(true)
         }
     }
 

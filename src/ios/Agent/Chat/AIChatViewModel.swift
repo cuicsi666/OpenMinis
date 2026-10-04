@@ -2152,7 +2152,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             speechSynthesizer.delegate = speechDelegate
         }
         replySpokenPending &+= 1
-        replySpokenPending &+= 1
         let utterance = makeUtterance(text)
         speechSynthesizer.speak(utterance)  // queues automatically, does NOT interrupt
     }

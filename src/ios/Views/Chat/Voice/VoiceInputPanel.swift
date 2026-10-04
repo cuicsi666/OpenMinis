@@ -531,27 +531,28 @@ final class VoiceInputViewModel: ObservableObject {
         guard callModeActive else { return }
         VoiceLog.log("[CallMode] resumeListening")
         // [T-call-continuous-mic] Keep the engine running (stable phone route).
-        // Just re-enable VAD input + the capture intent. Only (re)start the
-        // engine if it somehow stopped.
+        // Just re-enable VAD input + the capture flag. Only (re)start the engine
+        // if it somehow stopped.
         vad.setIgnoreInput(false)
-        AudioSessionCoordinator.shared.begin(.capture)
         VoiceModePreference.shared.isCapturing = true
         if !vad.isCapturing { startVAD() }
     }
 
-    /// [T-call-continuous-mic] Toggle reply TTS playback vs. microphone listening.
-    /// While a reply is playing we DON'T stop the engine (that would tear down
-    /// the Bluetooth phone route and flip ANC every round) — we instead tag the
-    /// input as ignored and release the capture intent so `canSpeakNow` allows
-    /// the TTS to actually speak through the HFP link. When playback ends we
-    /// reverse: re-assert capture + un-ignore to resume recognition.
+    /// [T-call-continuous-mic] Toggle "AI speaking" vs "listening" inside a call.
+    /// While the reply plays we DON'T stop the engine (that would tear down the
+    /// Bluetooth phone route and flip ANC every round) — we tag the input as
+    /// ignored AND clear the `isCapturing` flag so `canSpeakNow` lets the TTS
+    /// actually speak through the same HFP link. When playback ends we reverse.
+    ///
+    /// Must be called from `isProcessing` (reply start), NOT from `isReadingAloud`
+    /// — reading itself needs the capture flag released first, so waiting for it
+    /// would deadlock (no reply spoken → "pending" stays 0 → next round starts).
     func setCallReplyPlaying(_ playing: Bool) {
         guard callModeActive else { return }
+        vad.setIgnoreInput(playing)                         // engine stays alive
+        VoiceModePreference.shared.isCapturing = !playing   // gate for canSpeakNow
         if playing {
-            vad.setIgnoreInput(true)
-            AudioSessionCoordinator.shared.end(.capture)
-            VoiceModePreference.shared.isCapturing = false
-            VoiceLog.log("[CallMode] reply playing — ignoring mic (engine kept alive)")
+            VoiceLog.log("[CallMode] reply phase — mic ignored, TTS allowed")
         } else {
             resumeListening()
         }
