@@ -2202,6 +2202,16 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         if replySpokenPending > 0 { replySpokenPending -= 1 }
     }
 
+    /// Plain text of the LAST assistant message (text blocks joined) — the
+    /// completed reply for AutoPlayback.
+    func finalAssistantText() -> String {
+        guard let last = messages.last(where: { $0.role == .assistant }) else { return "" }
+        return last.blocks.compactMap { b -> String? in
+            guard b.kind == .text else { return nil }
+            return b.content
+        }.joined(separator: "\n")
+    }
+
     /// True once THIS turn (one user send, spanning ALL agent-loop iterations)
     /// has cleared the previous turn's TTS leftovers. Lives on the vm — NOT on
     /// StreamResult, which is recreated per loop iteration: a per-iteration

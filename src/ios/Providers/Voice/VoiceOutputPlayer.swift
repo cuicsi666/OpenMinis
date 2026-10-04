@@ -639,3 +639,143 @@ extension VoiceOutputPlayer: AVAudioPlayerDelegate {
         }
     }
 }
+
+// MARK: - AutoPlayback (老板定制: 独立播报系统「自动播放」)
+//
+// A self-contained reply-voicing system: when enabled, the completed reply text
+// is synthesized with Xiaomi MiMo TTS (茉莉 by default) and played back by our
+// own AVAudioPlayer. The playback-finished callback is OUR OWN event, so the
+// hands-free call knows exactly when the reply has been fully read — no reliance
+// on the system read-aloud gate (which has proven unreliable for this app).
+
+enum AutoPlaybackSettings {
+    private static let eKey = "AutoPlayback.enabled"
+    private static let bKey = "AutoPlayback.baseURL"
+    private static let kKey = "AutoPlayback.apiKey"
+    private static let vKey = "AutoPlayback.voice"
+
+    /// Master switch — when ON, every reply is auto-spoken by AutoPlayback.
+    static var enabled: Bool {
+        get { UserDefaults.standard.bool(forKey: eKey) }
+        set { UserDefaults.standard.set(newValue, forKey: eKey) }
+    }
+    /// Xiaomi MiMo OpenAI-compatible base URL (with or without trailing /v1).
+    static var baseURL: String {
+        get { UserDefaults.standard.string(forKey: bKey) ?? "https://api.xiaomimimo.com/v1" }
+        set { UserDefaults.standard.set(newValue, forKey: bKey) }
+    }
+    /// MiMo API key.
+    static var apiKey: String {
+        get { UserDefaults.standard.string(forKey: kKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: kKey) }
+    }
+    /// TTS voice; 茉莉 is the boss's favourite.
+    static var voice: String {
+        get { UserDefaults.standard.string(forKey: vKey) ?? "茉莉" }
+        set { UserDefaults.standard.set(newValue, forKey: vKey) }
+    }
+}
+
+@MainActor
+final class AutoPlaybackController: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    static let shared = AutoPlaybackController()
+
+    @Published private(set) var isSynthesizing = false
+    @Published private(set) var isPlaying = false
+    @Published private(set) var lastError: String?
+
+    private var player: AVAudioPlayer?
+    private var onFinished: (() -> Void)?
+
+    /// Whether a speak job is in flight (synthesizing or playing) — the
+    /// hands-free call waits for this to clear before re-opening the mic.
+    var isBusy: Bool { isSynthesizing || isPlaying }
+
+    func speak(_ text: String, completion: (() -> Void)? = nil) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard AutoPlaybackSettings.enabled, !trimmed.isEmpty else {
+            completion?(); return
+        }
+        stop()
+        onFinished = completion
+        lastError = nil
+        let apiKey = AutoPlaybackSettings.apiKey
+        guard !apiKey.isEmpty else { fail("自动播放：尚未填写小米 API Key"); return }
+        guard let url = URL(string: Self.composeURL()) else { fail("自动播放：Base URL 无效"); return }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let voice = AutoPlaybackSettings.voice.isEmpty ? "茉莉" : AutoPlaybackSettings.voice
+        let body: [String: Any] = [
+            "model": "mimo-v2.5-tts",
+            "messages": [
+                ["role": "user", "content": ""],
+                ["role": "assistant", "content": trimmed]
+            ],
+            "audio": ["format": "wav", "voice": voice]
+        ]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        isSynthesizing = true
+        Task { @MainActor in
+            do {
+                let (data, resp) = try await URLSession.shared.data(for: req)
+                guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                    self.fail("小米TTS HTTP \(String(describing: (resp as? HTTPURLResponse)?.statusCode))"); return
+                }
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let choices = json["choices"] as? [[String: Any]],
+                      let msg = choices.first?["message"] as? [String: Any],
+                      let audio = msg["audio"] as? [String: Any],
+                      let b64 = audio["data"] as? String,
+                      let audioData = Data(base64Encoded: b64) else {
+                    self.fail("自动播放：TTS 响应解析失败"); return
+                }
+                self.isSynthesizing = false
+                try self.play(audioData)
+            } catch {
+                self.fail("自动播放：请求失败 \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func fail(_ msg: String) {
+        isSynthesizing = false
+        lastError = msg
+        VoiceLog.log("[AutoPlayback] \(msg)")
+        onFinished?(); onFinished = nil
+    }
+
+    private func play(_ data: Data) throws {
+        let p = try AVAudioPlayer(data: data)
+        player = p
+        p.delegate = self
+        AudioSessionCoordinator.shared.begin(.replyTTS)
+        p.play()
+        isPlaying = true
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            self.isPlaying = false
+            AudioSessionCoordinator.shared.end(.replyTTS)
+            self.onFinished?(); self.onFinished = nil
+        }
+    }
+
+    func stop() {
+        player?.stop()
+        player = nil
+        isPlaying = false
+        AudioSessionCoordinator.shared.end(.replyTTS)
+        onFinished = nil
+    }
+
+    private static func composeURL() -> String {
+        var base = AutoPlaybackSettings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        if !base.hasSuffix("/v1") { base += "/v1" }
+        return base + "/chat/completions"
+    }
+}

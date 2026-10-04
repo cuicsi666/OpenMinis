@@ -237,6 +237,8 @@ struct AIChatView: View {
     @State private var inputFocused: Bool = false
     /// Dedupe guard for call-mode auto-send requests (same id can't fire twice).
     @State private var lastCallAutoSendID: UInt = 0
+    /// AutoPlayback (自动播放) settings sheet.
+    @State private var showAutoPlaybackSettings = false
     @State private var inputHasSelection: Bool = false
     @State private var inputIsScrollable: Bool = false
     /// [T-ios-composer-swipe-send-at-bottom] True when the composer's text is
@@ -3333,6 +3335,7 @@ struct AIChatView: View {
                 Spacer()
             }
             callButtonContainer
+            autoPlaybackSettingsButton
             micButtonContainer
             sendButton
         }
@@ -3633,22 +3636,56 @@ struct AIChatView: View {
             lastCallAutoSendID = id
             performSend()
         }
-        // [CallMode] Reply is done → EVENT-DRIVEN wait until the whole reply has
-        // genuinely been fully READ (pending unit counter hits zero + no
-        // system/cloud speech active), then restart listening. Long pauses in a
-        // reply never falsely trip this.
+        // [CallMode] Reply is done:
+        //   1. If AutoPlayback (自动播放) is ON → speak the FINAL reply text via
+        //      Xiaomi MiMo TTS with OUR OWN player (non-call too — boss wants
+        //      every reply voiced when enabled).
+        //   2. In a call: EVENT-DRIVEN wait until it is truly fully read (our
+        //      AutoPlayback busy, or the system/cloud fallback), then restart
+        //      listening. Long pauses never falsely trip this.
         .onChange(of: vm.isProcessing) { processing in
-            guard !processing, voiceVM.callModeActive, voiceVM.callAwaitingReply else { return }
+            guard !processing else { return }
+            if AutoPlaybackSettings.enabled {
+                let txt = vm.finalAssistantText()
+                if !txt.isEmpty { AutoPlaybackController.shared.speak(txt) }
+            }
+            guard voiceVM.callModeActive, voiceVM.callAwaitingReply else { return }
             Task { @MainActor in
                 var waits = 0
-                while (vm.replySpokenPending > 0 || vm.isSpeaking || VoiceOutputPlayer.shared.isPlaying), waits < 800 {
-                    waits += 1
-                    try? await Task.sleep(nanoseconds: 150_000_000) // 150ms, cap ~120s
+                if AutoPlaybackSettings.enabled {
+                    while AutoPlaybackController.shared.isBusy, waits < 800 {
+                        waits += 1
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                    }
+                } else {
+                    while (vm.replySpokenPending > 0 || vm.isSpeaking || VoiceOutputPlayer.shared.isPlaying), waits < 800 {
+                        waits += 1
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                    }
                 }
                 guard voiceVM.callModeActive else { return }
                 voiceVM.resumeListening()
             }
         }
+    }
+
+    /// AutoPlayback (自动播放) gear — opens the settings sheet with the master
+    /// switch + Xiaomi MiMo TTS config (base URL / API key / voice, default 茉莉).
+    private var autoPlaybackSettingsButton: some View {
+        Button {
+            showAutoPlaybackSettings = true
+        } label: {
+            Image(systemName: AutoPlaybackSettings.enabled ? "speaker.wave.2.circle.fill" : "speaker.slash.circle")
+                .font(.system(size: 15))
+                .foregroundStyle(AutoPlaybackSettings.enabled ? Color.orange : ChatColors.secondaryText)
+                .frame(width: 34, height: 34)
+                .background(ChatColors.inputIconBg)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(ChatColors.inputIconBorder, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(AutoPlaybackSettings.enabled ? "自动播放已开启" : "自动播放设置"))
+        .sheet(isPresented: $showAutoPlaybackSettings) { AutoPlaybackSettingsView() }
     }
 
     /// Mic button plus the attached language-picker sheet.
@@ -7148,4 +7185,55 @@ final class ComposerActionChannel {
     /// an early arrow/tab key keeps its default text-view behaviour).
     @discardableResult
     func send(_ action: Action) -> Bool { handler?(action) ?? false }
+}
+
+// MARK: - AutoPlayback settings sheet (自动播放)
+
+private struct AutoPlaybackSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var enabled = AutoPlaybackSettings.enabled
+    @State private var baseURL = AutoPlaybackSettings.baseURL
+    @State private var apiKey = AutoPlaybackSettings.apiKey
+    @State private var voice = AutoPlaybackSettings.voice
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("启用自动播放", isOn: $enabled)
+                } footer: {
+                    Text("开启后，每次 AI 回复内容都会自动用小米 TTS 播报（默认声色：茉莉）。开启后通话会等整段播报完成后才继续监听。")
+                }
+                Section("小米播报 API") {
+                    TextField("Base URL", text: $baseURL)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                    SecureField("API Key", text: $apiKey)
+                    TextField("声色 (Voice)", text: $voice)
+                } footer: {
+                    Text("默认 https://api.xiaomimimo.com/v1 · 茉莉")
+                }
+                if let err = AutoPlaybackController.shared.lastError {
+                    Section {
+                        Text(err).foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("自动播放")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { save(); dismiss() }
+                }
+            }
+            .onDisappear { save() }
+        }
+    }
+
+    private func save() {
+        AutoPlaybackSettings.enabled = enabled
+        AutoPlaybackSettings.baseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        AutoPlaybackSettings.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        AutoPlaybackSettings.voice = voice.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }

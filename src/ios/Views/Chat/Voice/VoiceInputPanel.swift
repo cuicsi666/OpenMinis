@@ -503,7 +503,12 @@ final class VoiceInputViewModel: ObservableObject {
         // directly left the live gate false (why earlier builds never spoke).
         // Write the AUTHORITATIVE state object instead.
         readAloudBeforeCall = VoiceOutputState.shared.isEnabled
-        VoiceOutputState.shared.isEnabled = true
+        if AutoPlaybackSettings.enabled {
+            // 自动播放系统接管回复播报 — 不强开系统朗读, 避免双份播报
+            VoiceLog.log("[CallMode] AutoPlayback ON — system read-aloud untouched")
+        } else {
+            VoiceOutputState.shared.isEnabled = true
+        }
         startCallIdleTimer()
         VoiceLog.log("[CallMode] enter — starting to listen (read-reply forced ON)")
         startVAD()
