@@ -3633,25 +3633,12 @@ struct AIChatView: View {
             lastCallAutoSendID = id
             performSend()
         }
-        // [CallMode] One place drives the whole reply cycle:
-        //   isProcessing TRUE  → reply is being generated → treat as "AI speaking
-        //                        phase": ignore the mic (engine stays alive for a
-        //                        stable phone route, no ANC flip) and release the
-        //                        "capturing" flag so canSpeakNow lets the TTS play.
-        //                        This must happen BEFORE reading begins — waiting
-        //                        for isReadingAloud creates a deadlock (reading
-        //                        needs capture released, capture release waits for
-        //                        reading).
-        //   isProcessing FALSE → reply done → EVENT-DRIVEN wait for it to be truly
-        //                        fully read (pending unit counter to zero + no
-        //                        system/cloud speech), then resume listening.
+        // [CallMode] Reply is done → EVENT-DRIVEN wait until the whole reply has
+        // genuinely been fully READ (pending unit counter hits zero + no
+        // system/cloud speech active), then restart listening. Long pauses in a
+        // reply never falsely trip this.
         .onChange(of: vm.isProcessing) { processing in
-            guard voiceVM.callModeActive else { return }
-            if processing {
-                voiceVM.setCallReplyPlaying(true)
-                return
-            }
-            guard voiceVM.callAwaitingReply else { return }
+            guard !processing, voiceVM.callModeActive, voiceVM.callAwaitingReply else { return }
             Task { @MainActor in
                 var waits = 0
                 while (vm.replySpokenPending > 0 || vm.isSpeaking || VoiceOutputPlayer.shared.isPlaying), waits < 800 {

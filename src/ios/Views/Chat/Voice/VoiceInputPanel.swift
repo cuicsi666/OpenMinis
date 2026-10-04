@@ -496,11 +496,14 @@ final class VoiceInputViewModel: ObservableObject {
         // mic session activates with the call-hold already live.
         AudioSessionCoordinator.shared.callModeProfileForced = true
         AudioSessionCoordinator.shared.begin(.callHold)
-        // [T-call-read-reply] Calls MUST read the reply aloud (otherwise
-        // canSpeakNow is false and nothing is spoken). Remember the prior state
-        // so leaving the call restores the user's own preference.
-        readAloudBeforeCall = VoiceOutputPreferences.isEnabled
-        VoiceOutputPreferences.isEnabled = true
+        // [T-call-read-reply] Calls MUST read the reply aloud. IMPORTANT: canSpeakNow
+        // gates on VoiceOutputState.canPlay (== VoiceOutputState.isEnabled &&
+        // !muted). VoiceOutputState.isEnabled's didSet mirrors to
+        // VoiceOutputPreferences, but NOT the reverse — writing the Preferences
+        // directly left the live gate false (why earlier builds never spoke).
+        // Write the AUTHORITATIVE state object instead.
+        readAloudBeforeCall = VoiceOutputState.shared.isEnabled
+        VoiceOutputState.shared.isEnabled = true
         startCallIdleTimer()
         VoiceLog.log("[CallMode] enter — starting to listen (read-reply forced ON)")
         startVAD()
@@ -519,7 +522,7 @@ final class VoiceInputViewModel: ObservableObject {
         // and the forced call profile; restore the user's own read-reply pref.
         AudioSessionCoordinator.shared.end(.callHold)
         AudioSessionCoordinator.shared.callModeProfileForced = false
-        if let prev = readAloudBeforeCall { VoiceOutputPreferences.isEnabled = prev }
+        if let prev = readAloudBeforeCall { VoiceOutputState.shared.isEnabled = prev }
         readAloudBeforeCall = nil
     }
 
@@ -530,12 +533,11 @@ final class VoiceInputViewModel: ObservableObject {
         lastTranscriptChangeAt = Date()
         guard callModeActive else { return }
         VoiceLog.log("[CallMode] resumeListening")
-        // [T-call-continuous-mic] Keep the engine running (stable phone route).
-        // Just re-enable VAD input + the capture flag. Only (re)start the engine
-        // if it somehow stopped.
+        // [CallMode] Recording was paused at send; restart the VAD now that the
+        // reply has fully completed. The call-hold keeps the session active.
         vad.setIgnoreInput(false)
         VoiceModePreference.shared.isCapturing = true
-        if !vad.isCapturing { startVAD() }
+        if !vad.isRunning || !vad.isCapturing { startVAD() }
     }
 
     /// [T-call-continuous-mic] Toggle "AI speaking" vs "listening" inside a call.
@@ -1223,10 +1225,11 @@ final class VoiceInputViewModel: ObservableObject {
         cancelPendingForceFlush()
         pendingSegments.removeAll(keepingCapacity: true)
         // Stop the mic on send (and cancel idle/background timers via stopListening).
-        // [T-call-continuous-mic] In call mode we KEEP the engine running so the
-        // Bluetooth phone route/ANC never tears down between turns; the reply
-        // playback is handled by setCallReplyPlaying (ignore). Only non-call stops.
-        if vad.isRunning, !callModeActive { stopListening() }
+        // [CallMode] The boss's rule: once a message is SENT, pause recording
+        // immediately — listening resumes only after the whole reply (incl.
+        // read-aloud) has completed. Stopping the VAD also releases the capture
+        // flag so reply TTS is allowed to speak.
+        if vad.isRunning { stopListening() }
         state = .waiting
         // Signal the inline view to collapse to compact mode after a send.
         collapseAfterSendToken &+= 1
